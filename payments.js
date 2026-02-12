@@ -15,6 +15,8 @@ async function getToken() {
 async function createPayment(produto, discordId, username) {
   const token = await getToken();
 
+  console.log("Postback URL:", `${process.env.BASE_URL}/webhook`);
+
   const response = await axios.post(
     `${process.env.SYNC_BASE_URL}/v1/gateway/api`,
     {
