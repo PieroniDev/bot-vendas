@@ -1,23 +1,8 @@
 require("dotenv").config();
-
-const {
-  Client,
-  GatewayIntentBits,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  SlashCommandBuilder,
-  Routes,
-  REST,
-  PermissionFlagsBits
-} = require("discord.js");
-
 const express = require("express");
-const { v4: uuidv4 } = require("uuid");
-
+const { Client, GatewayIntentBits, Partials } = require("discord.js");
+const { createPayment } = require("./payments");
 const db = require("./database");
-const { criarPagamento } = require("./payments");
-const { setupWebhook } = require("./webhook");
 
 const app = express();
 app.use(express.json());
@@ -25,110 +10,98 @@ app.use(express.json());
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers
-  ]
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.DirectMessages
+  ],
+  partials: [Partials.Channel]
 });
 
+client.once("ready", () => {
+  console.log(`Bot logado como ${client.user.tag}`);
+});
 
-// ===== REGISTRAR COMANDO =====
-const commands = [
-  new SlashCommandBuilder()
-    .setName("painel")
-    .setDescription("Criar painel de vendas")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .toJSON()
-];
+/*
+========================
+COMANDO DE COMPRA
+========================
+*/
 
-const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
-
-(async () => {
-  await rest.put(
-    Routes.applicationCommands(process.env.CLIENT_ID),
-    { body: commands }
-  );
-  console.log("Comandos registrados.");
-})();
-
-
-// ===== INTERAÇÕES =====
 client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
 
-  // Slash
-  if (interaction.isChatInputCommand()) {
-    if (interaction.commandName === "painel") {
+  if (interaction.commandName === "comprar") {
+    await interaction.deferReply({ flags: 64 });
 
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId("comprar_vip")
-          .setLabel("Comprar VIP - R$50")
-          .setStyle(ButtonStyle.Success)
+    try {
+      const produto = {
+        nome: "Produto VIP",
+        valor: 50
+      };
+
+      const payment = await createPayment(
+        produto,
+        interaction.user.id,
+        interaction.user.username
       );
 
-      await interaction.reply({
-        content: "🛒 Painel de Compras",
-        components: [row]
-      });
-    }
-  }
+      db.savePayment(payment.id, interaction.user.id, produto.nome);
 
-  // Botão
-  if (interaction.isButton()) {
+      await interaction.editReply(
+        `💰 PIX gerado!\n\n` +
+        `Valor: R$${produto.valor}\n\n` +
+        `Copia e Cola:\n${payment.pixCode}\n\n` +
+        `Após o pagamento o produto será entregue automaticamente.`
+      );
 
-    if (interaction.customId === "comprar_vip") {
-
-      const paymentId = uuidv4();
-
-      await interaction.reply({
-        content: "⏳ Gerando pagamento...",
-        flags: 64 // substitui ephemeral
-      });
-
-      try {
-
-        const pagamento = await criarPagamento(50, paymentId);
-
-        db.run(
-          "INSERT INTO payments VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-          [
-            paymentId,
-            interaction.user.id,
-            "VIP",
-            50,
-            "pending"
-          ]
-        );
-
-        await interaction.followUp({
-          content: `
-💰 Pagamento Gerado!
-
-👤 Nome: Valen Alves
-
-📋 PIX Copia e Cola:
-${pagamento.paymentCode}
-
-⚠️ Após o pagamento a entrega é automática.
-          `,
-          flags: 64
-        });
-
-      } catch (error) {
-        await interaction.followUp({
-          content: "❌ Erro ao gerar pagamento.",
-          flags: 64
-        });
-      }
+    } catch (error) {
+      console.error(error);
+      await interaction.editReply("❌ Erro ao gerar pagamento.");
     }
   }
 });
 
+/*
+========================
+WEBHOOK SYNC PAY
+========================
+*/
 
-// ===== INICIAR =====
-client.login(process.env.DISCORD_TOKEN);
+app.post("/webhook", async (req, res) => {
+  console.log("Webhook recebido:", req.body);
 
-setupWebhook(app, client);
+  const data = req.body.data;
+
+  if (!data) return res.sendStatus(200);
+
+  if (data.status === "approved") {
+
+    const paymentId = data.id;
+    const payment = db.getPayment(paymentId);
+
+    if (!payment) return res.sendStatus(200);
+
+    const user = await client.users.fetch(payment.discordId);
+
+    await user.send(
+      `✅ Pagamento aprovado!\n\n` +
+      `🎁 Seu produto: ${payment.produto}\n\n` +
+      `Obrigado pela compra!`
+    );
+
+    db.deletePayment(paymentId);
+  }
+
+  res.sendStatus(200);
+});
+
+/*
+========================
+SERVIDOR EXPRESS
+========================
+*/
 
 app.listen(process.env.PORT || 10000, () => {
-  console.log("Servidor rodando");
+  console.log("Servidor rodando...");
 });
 
+client.login(process.env.DISCORD_TOKEN);
