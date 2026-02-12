@@ -128,6 +128,7 @@ client.login(process.env.DISCORD_TOKEN);
 
 setupWebhook(app, client);
 
-app.listen(process.env.PORT, () => {
-  console.log("Servidor rodando na porta " + process.env.PORT);
+app.listen(process.env.PORT || 10000, () => {
+  console.log("Servidor rodando");
 });
+
